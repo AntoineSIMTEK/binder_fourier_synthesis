@@ -154,12 +154,12 @@ def self_affine_prefactor(nb_grid_pts, physical_sizes, Hurst, rms_height=None,
 
 #%%
 
-def fourier_synthesis(nb_grid_pts, physical_sizes, hurst,
+def fourier_synthesis(nb_grid_pts, physical_sizes,
+                      hurst=None,
                       rms_height=None, rms_slope=None, c0=None,
+                      psd=None,
                       short_cutoff=None, long_cutoff=None, rolloff=1.0,
-                      amplitude_distribution=lambda n: np.random.normal(
-                          size=n),
-                      periodic=True, rfn=None, kfn=None,
+                      amplitude_distribution=lambda n: np.random.normal(size=n), rfn=None, kfn=None,
                       progress_callback=None):
     r"""
     Create a self-affine, randomly rough surface using a Fourier filtering
@@ -182,6 +182,8 @@ def fourier_synthesis(nb_grid_pts, physical_sizes, hurst,
     c0: float
         self affine prefactor :math:`C_0`:
         :math:`C(q) = C_0 q^{-2-2H}`
+    psd: function
+    Ciso(q)
     short_cutoff : float
         Short-wavelength cutoff.
     long_cutoff : float
@@ -194,8 +196,6 @@ def fourier_synthesis(nb_grid_pts, physical_sizes, hurst,
     amplitude_distribution : function
         Function that generates the distribution of amplitudes.
         (Default: np.random.normal)
-    periodic : bool
-        Return a periodic surface. (Default: True)
     rfn : str
         Name of file that stores the real-space array. If specified, real-space
         array will be created as a memory mapped file. This is useful for
@@ -215,27 +215,27 @@ def fourier_synthesis(nb_grid_pts, physical_sizes, hurst,
     if short_cutoff is not None:
         q_max = 2 * np.pi / short_cutoff
     else:
-        q_max = np.pi * np.min(
-            np.asarray(nb_grid_pts) / np.asarray(physical_sizes))
+        q_max = np.pi * np.min(np.asarray(nb_grid_pts) / np.asarray(physical_sizes))
 
     if long_cutoff is not None:
         q_min = 2 * np.pi / long_cutoff
     else:
         q_min = None
 
-    if c0 is None:
-        fac = self_affine_prefactor(nb_grid_pts, physical_sizes, hurst,
-                                    rms_height=rms_height,
-                                    rms_slope=rms_slope,
-                                    short_cutoff=short_cutoff,
+
+    if psd is not None:
+        fac = np.prod(nb_grid_pts) / np.sqrt(np.prod(physical_sizes))
+
+    elif c0 is None:
+        fac = self_affine_prefactor(nb_grid_pts, physical_sizes, hurst, rms_height=rms_height,
+                                    rms_slope=rms_slope, short_cutoff=short_cutoff,
                                     long_cutoff=long_cutoff)
     else:
         # prefactor for the fourier heights
-        fac = np.sqrt(c0) * np.prod(nb_grid_pts) / np.sqrt(
-            np.prod(physical_sizes))
-        # C(q) = c0 q^(-2-2H) = 1 / A |fh(q)|^2
-        # and h(x,y) = sum(1/A fh(q) e^(iqx)))
-        # compensate for the np.fft normalisation
+        fac = np.sqrt(c0) * np.prod(nb_grid_pts) / np.sqrt(np.prod(physical_sizes))
+        #                   ^                       ^ C(q) = c0 q^(-2-2H) = 1 / A |fh(q)|^2
+        #                   |                         and h(x,y) = sum(1/A fh(q) e^(iqx)))
+        #                   compensate for the np.fft normalisation
 
     if len(nb_grid_pts) == 2:
         nx, ny = nb_grid_pts
@@ -269,16 +269,22 @@ def fourier_synthesis(nb_grid_pts, physical_sizes, hurst,
         else:
             qx = 2 * np.pi * x / sx
         q_sq = qx ** 2 + qy ** 2
-        if x == 0:
+        if x == 0 and not psd:
             q_sq[0] = 1.
         phase = np.exp(2 * np.pi * np.random.rand(kny) * 1j)
         ran = fac * phase * amplitude_distribution(kny)
-        if len(nb_grid_pts) == 2:
-            karr[x, :] = ran * q_sq ** (-(1 + hurst) / 2)
-            karr[x, q_sq > q_max ** 2] = 0.
+        if psd is None:
+            if len(nb_grid_pts) == 2:
+                karr[x, :] = ran * q_sq ** (-(1 + hurst) / 2)
+                karr[x, q_sq > q_max ** 2] = 0.
+            else:
+                karr[:] = ran * q_sq ** (-(0.5 + hurst) / 2)
+                karr[q_sq > q_max ** 2] = 0.
+
         else:
-            karr[:] = ran * q_sq ** (-(0.5 + hurst) / 2)
-            karr[q_sq > q_max ** 2] = 0.
+            karr[x, :] = ran * np.sqrt(psd(np.sqrt(q_sq)))
+            karr[x, q_sq > q_max ** 2] = 0.
+
         if q_min is not None:
             mask = q_sq < q_min ** 2
             if len(nb_grid_pts) == 2:
